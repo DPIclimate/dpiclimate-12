@@ -9,9 +9,31 @@ typedef union {
     uint8_t bytes[4];
 } FLOAT;
 
+constexpr int LEN_VENDOR = 8;
+constexpr int LEN_MODEL = 6;
+constexpr int LEN_SENSOR_VERSION = 3;
+constexpr int LEN_INFO = 13;
+
+typedef struct {
+  uint8_t address;
+  uint8_t sdi_version_major;
+  uint8_t sdi_version_minor;
+  uint8_t vendor[LEN_VENDOR];
+  uint8_t model[LEN_MODEL];
+  uint8_t sensor_version[LEN_SENSOR_VERSION];
+  uint8_t info[LEN_INFO];
+} sensor_info;
+
+typedef struct {
+    uint8_t count;
+    sensor_info *sensors;
+} sensor_list;
+
 class DPIClimate12 {
     public:
         DPIClimate12(SDI12 &sdi12) : m_sdi12(sdi12) {}
+
+        void scan_bus(sensor_list &sensor_list);
 
         /// \brief Take a measurement from the specified sensor.
         ///
@@ -20,7 +42,18 @@ class DPIClimate12 {
         ///
         /// \param address the SDI-12 address of the sensor to measure.
         /// \return the number of values read back from the sensor.
-        int do_measure(uint8_t address);
+        int do_measure(uint8_t address, bool crc = false);
+
+        int do_additional_measure(uint8_t address, uint8_t additional, bool crc = false);
+
+        int do_concurrent_measures(uint8_t *addresses, int num_addresses, bool crc = false);
+
+        int do_verification(char addr);
+
+        bool change_address(uint8_t from, uint8_t to);
+
+        int get_response();
+        int get_response(char *buffer, int buffer_len);
 
         /// \brief Retrieve the most recent values returned from a sensor.
         ///
@@ -40,6 +73,10 @@ class DPIClimate12 {
         FLOAT m_values[MAX_VALUES];
         char str_val[10]; // SDI-12 spec says value strings can have a max length of 9.
 
-        int get_response();
+        int do_any_measure(char *cmd, bool crc);
+        int do_data_commands(char addr, int num_values, bool crc);
+
         int parse_values();
+
+        bool check_crc();
 };
