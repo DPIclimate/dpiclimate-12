@@ -2,17 +2,32 @@
 #include <Arduino.h>
 #include <SDI12.h>
 
+// Enables serial debugging (verbose output)
+#define DPI12_USE_SERIAL
+
+// Serial1 works with standby mode.
+#ifdef DPI12_USE_SERIAL
+    #define serial Serial
+#endif
+
 /// \brief A union to make it simple to access the bytes of a float
 /// for encoding values into messages.
 typedef union {
     float value;
     uint8_t bytes[4];
-} FLOAT;
+} DPI12_FLOAT;
 
-constexpr int LEN_VENDOR = 8;
-constexpr int LEN_MODEL = 6;
-constexpr int LEN_SENSOR_VERSION = 3;
-constexpr int LEN_INFO = 13;
+typedef enum {
+	DPI12_OK = 0,
+	DPI12_ERR = -1,
+	DPI12_CRC_ERR = -2
+} DPI12_status;
+
+constexpr static int8_t LEN_VENDOR = 8;
+constexpr static int8_t LEN_MODEL = 6;
+constexpr static int8_t LEN_SENSOR_VERSION = 3;
+constexpr static int8_t LEN_INFO = 13;
+constexpr static int16_t DPI12_DELAY = 500;
 
 typedef struct {
   uint8_t address;
@@ -22,18 +37,19 @@ typedef struct {
   uint8_t model[LEN_MODEL];
   uint8_t sensor_version[LEN_SENSOR_VERSION];
   uint8_t info[LEN_INFO];
-} sensor_info;
+} DPI12_sensor_info;
 
 typedef struct {
     uint8_t count;
-    sensor_info *sensors;
-} sensor_list;
+    DPI12_sensor_info *sensors;
+} DPI12_sensor_list;
 
-class DPIClimate12 {
+class DPI12 {
     public:
-        DPIClimate12(SDI12 &sdi12) : m_sdi12(sdi12) {}
 
-        void scan_bus(sensor_list &sensor_list);
+        void begin(int8_t sdi12_data_pin, DPI12_sensor_list &sensor_list);
+
+        void scan_bus(DPI12_sensor_list &sensor_list);
 
         /// \brief Take a measurement from the specified sensor.
         ///
@@ -42,41 +58,59 @@ class DPIClimate12 {
         ///
         /// \param address the SDI-12 address of the sensor to measure.
         /// \return the number of values read back from the sensor.
-        int do_measure(uint8_t address, bool crc = false);
+        int8_t do_command(const char* cmd, bool crc = false);
+        int8_t do_measure(uint8_t address, bool crc = false);
 
-        int do_additional_measure(uint8_t address, uint8_t additional, bool crc = false);
+        int8_t do_additional_measure(uint8_t address,
+                                     uint8_t additional,
+                                     bool crc = false);
 
-        int do_concurrent_measures(uint8_t *addresses, int num_addresses, bool crc = false);
+        int8_t do_concurrent_measures(const uint8_t *addresses,
+                                      int num_addresses,
+                                      bool crc = false);
 
-        int do_verification(char addr);
+        int8_t do_verify(uint8_t address);
 
         bool change_address(uint8_t from, uint8_t to);
 
-        int get_response();
-        int get_response(char *buffer, int buffer_len);
+        int8_t get_response();
 
         /// \brief Retrieve the most recent values returned from a sensor.
         ///
         /// \return a pointer to an array of FLOATs holding the most recently
         /// received values.
-        FLOAT* get_values();
-        FLOAT get_value(int i);
+        DPI12_FLOAT* get_values();
+        DPI12_FLOAT get_value(int8_t i);
+
+        #ifdef DPI12_USE_SERIAL
+            static void device_information(DPI12_sensor_info* sensor);
+        #endif
 
     private:
-        SDI12 &m_sdi12;
+        // Set delay based on experince with different sensors
+        static void do_delay();
 
-        constexpr static int BUF_LEN = 80;
-        char cmd_buffer[BUF_LEN+1];
-        char response_buffer[BUF_LEN+1];
+		// Max number of connected sensors
+		constexpr static const int8_t MAX_SENSORS = 10;
+		// List of connected sensors
+        DPI12_sensor_info DPI12_sensors[MAX_SENSORS];
 
-        constexpr static int MAX_VALUES = 32;
-        FLOAT m_values[MAX_VALUES];
-        char str_val[10]; // SDI-12 spec says value strings can have a max length of 9.
+		// Read buffer length (max length of 35 or 75)
+		constexpr static int8_t BUF_LEN = 80;
+		// Response buffer
+		char res_buf[BUF_LEN+1];
 
-        int do_any_measure(char *cmd, bool crc);
-        int do_data_commands(char addr, int num_values, bool crc);
+		// Max number of data values
+        constexpr static int8_t MAX_VALUES = 32;
+		// Array of enum FLOAT to hold data values
+        DPI12_FLOAT m_values[MAX_VALUES];
 
-        int parse_values();
+        int8_t do_data_command(const uint8_t address,
+                               const int8_t num_values,
+                               const bool crc);
+
+        int8_t parse_values();
 
         bool check_crc();
 };
+
