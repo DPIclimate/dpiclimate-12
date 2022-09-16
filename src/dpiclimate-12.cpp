@@ -1,19 +1,37 @@
 // Serial1 works with standby mode.
 #define serial Serial
 
-//#define USE_SERIAL
+#define USE_SERIAL
 
 #include <cmath>
+#include <limits>
+
 #include <dpiclimate-12.h>
 
-char measure_cmd[] = { 0, 'M', '!', 0 };
-char measure_crc_cmd[] = { 0, 'M', 'C', '!', 0 };
-char additional_measure_cmd[] = { 0, 'M', 0, '!', 0 };
-char additional_measure_crc_cmd[] = { 0, 'M', 'C', 0, '!', 0 };
-char data_cmd[] = { 0, 'D', '0', '!', 0 };
+// The ESP32 requires these variables to be in RTC memory so they
+// keep their value over deep sleep reboots. Other architectures
+// don't need that so make the RTC_DATA_ATTR macro empty when not
+// compiling for the ESP32.
+#if not defined RTC_DATA_ATTR
+#define RTC_DATA_ATTR
+#endif
 
-#define MAX_SENSORS 10
-static sensor_info sensors[MAX_SENSORS];
+RTC_DATA_ATTR char measure_cmd[] = { 0, 'M', '!', 0 };
+RTC_DATA_ATTR char measure_crc_cmd[] = { 0, 'M', 'C', '!', 0 };
+RTC_DATA_ATTR char additional_measure_cmd[] = { 0, 'M', 0, '!', 0 };
+RTC_DATA_ATTR char additional_measure_crc_cmd[] = { 0, 'M', 'C', 0, '!', 0 };
+RTC_DATA_ATTR char data_cmd[] = { 0, 'D', '0', '!', 0 };
+
+RTC_DATA_ATTR char c_measure_cmd[] = { 0, 'C', '!', 0 };
+RTC_DATA_ATTR char c_measure_crc_cmd[] = { 0, 'C', 'C', '!', 0 };
+RTC_DATA_ATTR char c_additional_measure_cmd[] = { 0, 'C', 0, '!', 0 };
+RTC_DATA_ATTR char c_additional_measure_crc_cmd[] = { 0, 'C', 'C', 0, '!', 0 };
+
+RTC_DATA_ATTR static sensor_info sensors[DPIClimate12::MAX_SENSORS];
+
+// When initialising a union you provide one value, which is assinged to the
+// first member of the union.
+FLOAT DPIClimate12::NaN = { std::numeric_limits<float>::signaling_NaN() };
 
 int DPIClimate12::get_response() {
     #ifdef USE_SERIAL
@@ -104,7 +122,7 @@ int DPIClimate12::get_response(char *buffer, int buffer_len) {
  *
  * Returns the number of floats parsed. The values are found in values[0 .. n-1].
  */
-int DPIClimate12::parse_values() {
+int DPIClimate12::parse_values(int value_idx) {
     // Assume the first character is an SDI-12 address.
     if (response_buffer[1] != '+' && response_buffer[1] != '-') {
         #ifdef USE_SERIAL
@@ -113,7 +131,7 @@ int DPIClimate12::parse_values() {
         return -1;
     }
 
-    int val_count = 0;
+    int v_count = 0;
     str_val[0] = response_buffer[1];
     int sv_idx = 1;
 
@@ -139,13 +157,18 @@ int DPIClimate12::parse_values() {
             continue;
         }
 
-        m_values[val_count].value = atof(str_val);
-        val_count++;
+        m_values[value_idx].value = atof(str_val);
+        value_idx++;
+        v_count++;
         str_val[0] = ch;
         sv_idx = 1;
+
+        if (value_idx >= MAX_VALUES) {
+            break;
+        }
     }
 
-    return val_count;
+    return v_count;
 }
 
 int DPIClimate12::do_any_measure(char *cmd, bool crc) {
@@ -221,7 +244,7 @@ int DPIClimate12::do_additional_measure(uint8_t address, uint8_t additional, boo
     return do_any_measure(cmd, crc);
 }
 
-int DPIClimate12::do_data_commands(char addr, int num_values, bool crc) {
+int DPIClimate12::do_data_commands(char addr, uint8_t num_values, bool crc) {
     data_cmd[0] = addr;
 
     int value_count = 0;
@@ -229,6 +252,7 @@ int DPIClimate12::do_data_commands(char addr, int num_values, bool crc) {
 
     while (value_count < num_values && d_cmd_count < 10) {
         data_cmd[2] = '0' + d_cmd_count++;
+
         #ifdef USE_SERIAL
         serial.print("Sending command: "); serial.write(data_cmd, strlen(data_cmd)); serial.println();
         #endif
@@ -248,24 +272,42 @@ int DPIClimate12::do_data_commands(char addr, int num_values, bool crc) {
             return -1;
         }
 
-        len = parse_values();
+        len = parse_values(value_count);
         if (len < 1) {
             return -1;
         }
 
         value_count += len;
+        delay(10);
     }
 
     return value_count;
 }
 
-int DPIClimate12::do_concurrent_measures(uint8_t *addresses, int num_addresses, bool crc) {
-    static char c_measure_cmd[] = { 0, 'C', '!', 0 };
-    static char c_measure_crc_cmd[] = { 0, 'C', 'C', '!', 0 };
+int DPIClimate12::do_concurrent_measures(uint8_t *addresses, int num_addresses, uint8_t measure_id, result_info *results_info, bool crc) {
+    uint8_t num_values;
 
-    char *cmd = crc ? c_measure_crc_cmd : c_measure_cmd;
+    if (addresses == nullptr || results_info == nullptr || num_addresses < 1 || measure_id > 9) {
+        return -1;
+    }
 
-    int max_delay = 0;
+    char *cmd;
+    if (measure_id < 1) {
+        cmd = crc ? c_measure_crc_cmd : c_measure_cmd;
+    } else {
+        if (crc) {
+            cmd = c_additional_measure_crc_cmd;
+            cmd[3] = '0' + measure_id;
+        } else {
+            cmd = c_additional_measure_cmd;
+            cmd[2] = '0' + measure_id;
+        }
+    }
+
+    if (num_addresses > MAX_SENSORS) {
+        num_addresses = MAX_SENSORS;
+    }
+
     for (int i = 0; i < num_addresses; i++) {
         cmd[0] = addresses[i];
 
@@ -288,49 +330,16 @@ int DPIClimate12::do_concurrent_measures(uint8_t *addresses, int num_addresses, 
             return -1;
         }
 
-        uint8_t num_values = (((uint8_t)response_buffer[4] - '0') * 10) + (uint8_t)response_buffer[5] - '0';
+        num_values = (((uint8_t)response_buffer[4] - '0') * 10) + (uint8_t)response_buffer[5] - '0';
         response_buffer[4] = 0;
         long delay_seconds = atol(&response_buffer[1]);
-        if (delay_seconds > max_delay) {
-            max_delay = delay_seconds;
-        }
 
+        results_info[i].delay = delay_seconds;
+        results_info[i].num_values = num_values;
         #ifdef USE_SERIAL
         serial.print("Wait "); serial.print(delay_seconds); serial.print(", for "); serial.print(num_values); serial.println(" values");
         #endif
     }
-
-    // No attention responses for concurrent measurements, just wait for the longest
-    // sensor.
-    delay(max_delay * 1000);
-
-    for (int i = 0; i < num_addresses; i++) {
-        data_cmd[0] = addresses[i];
-        data_cmd[2] = '0';
-        #ifdef USE_SERIAL
-        serial.print("Sending command: "); serial.write(data_cmd, strlen(data_cmd)); serial.println();
-        #endif
-        m_sdi12.sendCommand(data_cmd);
-        int len = get_response();
-        if (len < 2) {
-            #ifdef USE_SERIAL
-            serial.println("Did not get expected readings from sensor");
-            #endif
-            return -1;
-        }
-
-        if (crc && ! check_crc()) {
-            #ifdef USE_SERIAL
-            serial.println("Bad CRC");
-            #endif
-            return -1;
-        }
-
-        len = parse_values();
-    }
-
-    // EnviroPros seem to need a pause before they're ready to respond after they do anything.
-    delay(500);
 
     return 0;
 }
@@ -341,15 +350,15 @@ int DPIClimate12::do_verification(char addr) {
 }
 
 FLOAT* DPIClimate12::get_values() {
-    return &m_values[0];
+    return m_values;
 }
 
 FLOAT DPIClimate12::get_value(int i) {
-  if (i < MAX_VALUES) {
+  if (i >= 0 && i < MAX_VALUES) {
     return m_values[i];
   }
 
-  return m_values[0];
+  return NaN;
 }
 
 void DPIClimate12::scan_bus(sensor_list &sensor_list) {
