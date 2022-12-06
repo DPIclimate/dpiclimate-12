@@ -8,6 +8,30 @@
 
 #include <dpiclimate-12.h>
 
+#ifdef ESP32
+#include "esp_log.h"
+#define TAG "DPI12"
+#define LOG(format, ...) ESP_LOGI(TAG, format, ##__VA_ARGS__)
+#else
+#define LOG log_msg
+
+// A buffer for printing log messages.
+static constexpr int MAX_MSG = 256;
+static char msg[MAX_MSG];
+
+// A printf-like function to print log messages prefixed by the current
+// LMIC tick value. Don't call it before os_init();
+void log_msg(const char *fmt, ...) {
+    va_list args;
+    va_start(args, fmt);
+    vsnprintf(msg, MAX_MSG, fmt, args);
+    va_end(args);
+    serial.write(msg, strlen(msg));
+    serial.println();
+}
+}
+#endif
+
 // The ESP32 requires these variables to be in RTC memory so they
 // keep their value over deep sleep reboots. Other architectures
 // don't need that so make the RTC_DATA_ATTR macro empty when not
@@ -16,92 +40,66 @@
 #define RTC_DATA_ATTR
 #endif
 
-RTC_DATA_ATTR char measure_cmd[] = { 0, 'M', '!', 0 };
-RTC_DATA_ATTR char measure_crc_cmd[] = { 0, 'M', 'C', '!', 0 };
-RTC_DATA_ATTR char additional_measure_cmd[] = { 0, 'M', 0, '!', 0 };
-RTC_DATA_ATTR char additional_measure_crc_cmd[] = { 0, 'M', 'C', 0, '!', 0 };
-RTC_DATA_ATTR char data_cmd[] = { 0, 'D', '0', '!', 0 };
+char measure_cmd[] = { 0, 'M', '!', 0 };
+char measure_crc_cmd[] = { 0, 'M', 'C', '!', 0 };
+char additional_measure_cmd[] = { 0, 'M', 0, '!', 0 };
+char additional_measure_crc_cmd[] = { 0, 'M', 'C', 0, '!', 0 };
+char data_cmd[] = { 0, 'D', '0', '!', 0 };
 
-RTC_DATA_ATTR char c_measure_cmd[] = { 0, 'C', '!', 0 };
-RTC_DATA_ATTR char c_measure_crc_cmd[] = { 0, 'C', 'C', '!', 0 };
-RTC_DATA_ATTR char c_additional_measure_cmd[] = { 0, 'C', 0, '!', 0 };
-RTC_DATA_ATTR char c_additional_measure_crc_cmd[] = { 0, 'C', 'C', 0, '!', 0 };
+char c_measure_cmd[] = { 0, 'C', '!', 0 };
+char c_measure_crc_cmd[] = { 0, 'C', 'C', '!', 0 };
+char c_additional_measure_cmd[] = { 0, 'C', 0, '!', 0 };
+char c_additional_measure_crc_cmd[] = { 0, 'C', 'C', 0, '!', 0 };
 
 RTC_DATA_ATTR static sensor_info sensors[DPIClimate12::MAX_SENSORS];
 
-// When initialising a union you provide one value, which is assinged to the
+// When initialising a union you provide one value, which is assigned to the
 // first member of the union.
 FLOAT DPIClimate12::NaN = { std::numeric_limits<float>::signaling_NaN() };
 
-int DPIClimate12::get_response() {
-    #ifdef USE_SERIAL
-        serial.print("Waiting for response");
-        serial.flush();
-    #endif
-
-    int a = 0;
-    uint8_t tries = 0;
-    while (a < 1) {
-        delay(10);
+int DPIClimate12::waitForChar(uint32_t timeout) {
+    uint32_t start = millis();
+    int a = m_sdi12.available();
+    while ((millis() - start) < timeout && a < 1) {
+        delay(10); // Let the MCU do something else.
         a = m_sdi12.available();
-        tries++;
-
-        // Wait up to 500ms, some sensors are not ready to send even
-        // if they have sent the attention command after a measure.
-        if (a < 1 && tries > 50) {
-            #ifdef USE_SERIAL
-                serial.println(" - timeout");
-                serial.flush();
-            #endif
-            return -1;
-        }
     }
 
-    int i = 0;
-    int ch;
-    tries = 0;
-    memset(response_buffer, 0, sizeof(response_buffer));
-    while (i < BUF_LEN && tries < 10) {
-        if (m_sdi12.available() < 1) {
-            delay(10);
-            tries++;
-            continue;
-        }
+    uint32_t end = millis();
+    LOG("Delta from start of read: %lu ms, UART available = %d", (end - start), a);
 
-        ch = m_sdi12.read();
-        if (ch == 0x0a || ch == 0x0d || (ch >= 32 && ch <= 126)) {
-            // Reset the tries counter whenever a valid character is received.
-            tries = 0;
-            if (ch >= 32) {
-                response_buffer[i++] = ch;
-                response_buffer[i] = 0;
-            }
-
-            if (ch == '\n') {
-                break;
-            }
-        } else {
-            // Assume any invalid character means the response is useless
-            // and return an error.
-            #ifdef USE_SERIAL
-                serial.print(" - invalid character ");
-                serial.print(ch, HEX);
-                serial.print(" ");
-                serial.flush();
-            #endif
-            return -1;
-        }
-    }
-
-    #ifdef USE_SERIAL
-        serial.print(", received: "); serial.write(response_buffer, i); serial.print(", length: "); serial.print(i); serial.println();
-    #endif
-
-    return i;
+    return a > 0 ? a : -1;
 }
 
-int DPIClimate12::get_response(char *buffer, int buffer_len) {
-    int i = get_response();
+int DPIClimate12::get_response(uint32_t timeout) {
+    int a = waitForChar(timeout);
+    if (a < 1) {
+        LOG("Timeout");
+        return -1;
+    }
+
+    memset(response_buffer, 0, sizeof(response_buffer));
+    size_t len = m_sdi12.readBytesUntil('\n', response_buffer, BUF_LEN);
+
+    // Strip trailing whitespace. response_buffer + len would point to the trailing null
+    // so subtract one from that to get to the last character.
+    char *p = response_buffer + len - 1;
+    while (p > response_buffer && *p != 0 && *p < ' ') {
+        *p = 0;
+        p--;
+    }
+
+    // Why 1 is added here: imagine the string is "X"; this means p == msg_buf but the string
+    // length is 1, not 0.
+    len = p - response_buffer + 1;
+
+    LOG("Received: [%s] [%d]", response_buffer, len);
+
+    return len;
+}
+
+int DPIClimate12::get_response(char *buffer, int buffer_len, uint32_t timeout) {
+    int i = get_response(timeout);
     if (i > 0 && buffer != 0 && buffer_len > 0) {
         int len = i < buffer_len ? i : buffer_len;
         memcpy(buffer, response_buffer, len);
@@ -125,9 +123,7 @@ int DPIClimate12::get_response(char *buffer, int buffer_len) {
 int DPIClimate12::parse_values(int value_idx) {
     // Assume the first character is an SDI-12 address.
     if (response_buffer[1] != '+' && response_buffer[1] != '-') {
-        #ifdef USE_SERIAL
-        serial.println("Invalid response, expected first value to start with + or -");
-        #endif
+        LOG("Invalid response, expected first value to start with + or -");
         return -1;
     }
 
@@ -171,77 +167,95 @@ int DPIClimate12::parse_values(int value_idx) {
     return v_count;
 }
 
-int DPIClimate12::do_any_measure(char *cmd, bool crc) {
-    #ifdef USE_SERIAL
-        serial.print("Sending command: "); serial.write(cmd, strlen(cmd)); serial.println();
-    #endif
+int DPIClimate12::do_any_measure(char *cmd, bool wait_full_time, bool crc) {
+    LOG("Sending command: [%s]", cmd);
 
     // EnviroPros seem to need a pause before they're ready to respond after they do anything.
-    delay(500);
+    //delay(500);
 
     m_sdi12.clearBuffer();
     m_sdi12.sendCommand(cmd);
     int len = get_response();
-    if (len != 5) {
+
+    bool is_concurrent = false;
+    int expected_len = 5; // For an M command.
+    if (cmd[1] == 'C') {
+        is_concurrent = true;
+        expected_len = 6; // Concurrent measures use 2 digits for the number of values.
+        wait_full_time = true; // Concurrent measures have no service request so must wait the full time.
+    }
+
+    // NOTE: This code doesn't work for concurrent measurements. They use 2 digits to
+    // specify how many values will be returned.
+    if (len != expected_len) {
         if (len < 1) {
-            #ifdef USE_SERIAL
-                serial.println("timeout");
-            #endif
+            LOG("Timeout");
         } else {
-            #ifdef USE_SERIAL
-                serial.print("Invalid response to measure command: "); serial.write(response_buffer, len); serial.println();
-            #endif
+            LOG("Invalid response to measure command: [%s]", response_buffer);
         }
         return -1;
     }
 
-    uint8_t num_values = (uint8_t)response_buffer[4] - '0';
+    // NOTE: This is 'tricky' code. First it uses response_buffer[4] to determine how many values
+    // are expected, then it sets response_buffer[4] to zero, null-terminating the
+    // time-to-wait string starting at response_buffer[1]. So the number of values must be read
+    // first, then the time-to-wait parsed after that.
+    int num_values = atoi(&response_buffer[4]);
     response_buffer[4] = 0;
     long delay_seconds = atol(&response_buffer[1]);
 
-    #ifdef USE_SERIAL
-    serial.print("Wait "); serial.print(delay_seconds); serial.print(", for "); serial.print(num_values); serial.println(" values");
-    #endif
+    LOG("Wait %lds for %d values", delay_seconds, num_values);
 
     if (delay_seconds > 0) {
-        uint32_t start_ms = millis();
-        uint32_t end_ms = start_ms + (delay_seconds * 1000);
-        uint32_t now_ms = start_ms;
-        len = 0;
-        while (now_ms < end_ms && len < 1) {
-            delay(200);
-            now_ms = millis();
-
-            // Wait for the service request from the sensor. It must send a service request
-            // if it specifies a wait period > 0 (SDI-12 spec v1.4, pg 13, ss 4.4.6).
-            len = get_response();
+        // Most sensors send a service request when they're ready to deliver their data. However, EnviroPros are not
+        // ready to deliver their data after their service request. Waiting the entire delay seems to work.
+        if (wait_full_time) {
+            delay(delay_seconds * 1000); // ENVPRO & C4E
         }
 
-        if (len != 1) {
-            #ifdef USE_SERIAL
-            serial.println("Did not get expected service request from sensor");
-            #endif
-            return -1;
+        if ( ! is_concurrent) {
+            len = get_response(delay_seconds * 1000);
+            if (len < 1) {
+                LOG("Did not get service request from sensor");
+                return -1;
+            }
         }
     }
 
     // EnviroPros seem to need a pause before they're ready to respond after they do anything.
-    delay(500);
+    //delay(500);
 
     return do_data_commands(cmd[0], num_values, crc);
 }
 
-int DPIClimate12::do_measure(uint8_t address, bool crc) {
+int DPIClimate12::do_measure(uint8_t address, bool wait_full_time , bool crc) {
     char *cmd = crc ? measure_crc_cmd : measure_cmd;
     cmd[0] = address;
-    return do_any_measure(cmd, crc);
+    return do_any_measure(cmd, wait_full_time, crc);
 }
 
+int DPIClimate12::do_concurrent(uint8_t address, bool crc) {
+    char *cmd = crc ? c_measure_crc_cmd : c_measure_cmd;
+    cmd[0] = address;
+    return do_any_measure(cmd, true, crc);
+}
+
+// TODO: Does this need the wait_full_time option to be passed in?
 int DPIClimate12::do_additional_measure(uint8_t address, uint8_t additional, bool crc) {
     char *cmd = crc ? additional_measure_crc_cmd : additional_measure_cmd;
     cmd[0] = address;
     cmd[2] = additional;
-    return do_any_measure(cmd, crc);
+
+    return do_any_measure(cmd, false, crc);
+}
+
+// TODO: Does this need the wait_full_time option to be passed in?
+int DPIClimate12::do_additional_concurrent(uint8_t address, uint8_t additional, bool crc) {
+    char *cmd = crc ? c_additional_measure_crc_cmd : c_additional_measure_cmd;
+    cmd[0] = address;
+    cmd[2] = additional;
+
+    return do_any_measure(cmd, true, crc);
 }
 
 int DPIClimate12::do_data_commands(char addr, uint8_t num_values, bool crc) {
@@ -249,26 +263,20 @@ int DPIClimate12::do_data_commands(char addr, uint8_t num_values, bool crc) {
 
     int value_count = 0;
     int d_cmd_count = 0;
+    data_cmd[2] = '0';
 
     while (value_count < num_values && d_cmd_count < 10) {
-        data_cmd[2] = '0' + d_cmd_count++;
+        LOG("Sending command: [%s]", data_cmd);
 
-        #ifdef USE_SERIAL
-        serial.print("Sending command: "); serial.write(data_cmd, strlen(data_cmd)); serial.println();
-        #endif
         m_sdi12.sendCommand(data_cmd);
         int len = get_response();
         if (len < 3) {
-            #ifdef USE_SERIAL
-            serial.println("Did not get expected readings from sensor");
-            #endif
+            LOG("Did not get expected readings from sensor");
             return -1;
         }
 
         if (crc && ! check_crc()) {
-            #ifdef USE_SERIAL
-            serial.println("Bad CRC");
-            #endif
+            LOG("Bad CRC");
             return -1;
         }
 
@@ -278,7 +286,9 @@ int DPIClimate12::do_data_commands(char addr, uint8_t num_values, bool crc) {
         }
 
         value_count += len;
-        delay(10);
+        data_cmd[2]++;
+
+        delay(10); // ENVPRO!
     }
 
     return value_count;
@@ -346,7 +356,7 @@ int DPIClimate12::do_concurrent_measures(uint8_t *addresses, int num_addresses, 
 
 int DPIClimate12::do_verification(char addr) {
     char cmd[] = { addr, 'V', '!', 0 };
-    return do_any_measure(cmd, false);
+    return do_any_measure(cmd, false, false);
 }
 
 FLOAT* DPIClimate12::get_values() {
@@ -365,33 +375,23 @@ void DPIClimate12::scan_bus(sensor_list &sensor_list) {
     static char attn_cmd[] = { 0, '!', 0};
     static char info_cmd[] = { 0, 'I', '!', 0};
 
-    int s_count = 0;
+    sensor_list.count = 0;
     size_t info_size = sizeof(sensor_info);
     memset((void *)&sensors, 0, sizeof(sensor_info) * MAX_SENSORS);
     for (char c = '0'; c <= '9'; c++) {
-        attn_cmd[0] = c;
+        info_cmd[0] = c;
         m_sdi12.clearBuffer();
-        m_sdi12.sendCommand(attn_cmd);
-        int len = get_response();
-        if (len == 1) {
-            // EnviroPros & C4E salinity sensors seem to need a pause here.
-            delay(500);
-            info_cmd[0] = c;
-            m_sdi12.clearBuffer();
-            m_sdi12.sendCommand(info_cmd);
-            len = get_response();
-            if (len > 0) {
-                size_t max = len < info_size ? len : info_size;
-                memcpy(&sensors[s_count], response_buffer, max);
-                s_count++;
-            }
+        LOG("Sending command [%s]", info_cmd);
+        m_sdi12.sendCommand(info_cmd);
+        int len = get_response(150);
+        if (len > 0) {
+            size_t max = len < info_size ? len : info_size;
+            memcpy(&sensors[sensor_list.count], response_buffer, max);
+            sensors[sensor_list.count].null = 0;
+            sensor_list.count++;
         }
-
-        // C4E salinity sensor needs a delay here.
-        delay(500);
     }
 
-    sensor_list.count = s_count;
     sensor_list.sensors = sensors;
 }
 
