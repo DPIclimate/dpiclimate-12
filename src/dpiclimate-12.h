@@ -92,11 +92,32 @@ class DPIClimate12 {
         FLOAT* get_values();
         FLOAT get_value(int i);
 
+        /// \brief Copy the vendor id for the given sensor into buffer.
+        ///
+        /// buffer must be at least LEN_VENDOR+1 bytes long.
+
+        /// \param buffer The buffer to copy the vendor id into. It will be null-terminated
+        ///               and have trailing spaces stripped.
+        /// \param sensor_idx The index of the sensor with sensor_list.sensors. This is not the
+        ///                   SDI-12 address of the sensor.
+        /// \param sensors A sensor_list structure as filled in by scan_bus.
+        static void get_vendor(char *buffer, size_t sensor_idx, sensor_list &sensors);
+
+        /// \brief Copy the model id for the given sensor into buffer.
+        ///
+        /// buffer must be at least LEN_MODEL+1 bytes long.
+
+        /// \param buffer The buffer to copy the model id into. It will be null-terminated
+        ///               and have trailing spaces stripped.
+        /// \param sensor_idx The index of the sensor with sensor_list.sensors. This is not the
+        ///                   SDI-12 address of the sensor.
+        /// \param sensors A sensor_list structure as filled in by scan_bus.
+        static void get_model(char *buffer, size_t sensor_idx, sensor_list &sensors);
+
     private:
         SDI12 &m_sdi12;
 
         constexpr static int BUF_LEN = 80;
-        //char cmd_buffer[BUF_LEN+1];
         char response_buffer[BUF_LEN+1];
 
         FLOAT m_values[MAX_VALUES];
