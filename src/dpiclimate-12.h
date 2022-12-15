@@ -101,7 +101,7 @@ class DPIClimate12 {
         /// \param sensor_idx The index of the sensor with sensor_list.sensors. This is not the
         ///                   SDI-12 address of the sensor.
         /// \param sensors A sensor_list structure as filled in by scan_bus.
-        static void get_vendor(char *buffer, size_t sensor_idx, sensor_list &sensors);
+        static void get_vendor(char *buffer, const size_t sensor_idx, const sensor_list &sensors);
 
         /// \brief Copy the model id for the given sensor into buffer.
         ///
@@ -112,7 +112,7 @@ class DPIClimate12 {
         /// \param sensor_idx The index of the sensor with sensor_list.sensors. This is not the
         ///                   SDI-12 address of the sensor.
         /// \param sensors A sensor_list structure as filled in by scan_bus.
-        static void get_model(char *buffer, size_t sensor_idx, sensor_list &sensors);
+        static void get_model(char *buffer, const size_t sensor_idx, const sensor_list &sensors);
 
     private:
         SDI12 &m_sdi12;

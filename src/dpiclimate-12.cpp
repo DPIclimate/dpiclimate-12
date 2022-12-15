@@ -430,21 +430,24 @@ bool DPIClimate12::check_crc() {
            ascii_crc[2] == response_buffer[resp_len] ;
 }
 
-void  DPIClimate12::get_vendor(char *buffer, size_t sensor_idx, sensor_list &sensors) {
+void  DPIClimate12::get_vendor(char *buffer, const size_t sensor_idx, const sensor_list &sensors) {
     memset(buffer, 0, LEN_VENDOR+1);
+    char *b = buffer;
     char *c = reinterpret_cast<char *>(sensors.sensors[sensor_idx].vendor);
-    while (*c == ' ' && c >= buffer) {
-        *c = 0;
-        c--;
+
+    for (size_t i = 0; i < LEN_VENDOR && *c != ' '; i++) {
+        *b++ = *c++;
+        *b = 0;
     }
 }
 
-void  DPIClimate12::get_model(char *buffer, size_t sensor_idx, sensor_list &sensors) {
+void  DPIClimate12::get_model(char *buffer, const size_t sensor_idx, const sensor_list &sensors) {
     memset(buffer, 0, LEN_MODEL+1);
-    strncpy(buffer, reinterpret_cast<const char *>(sensors.sensors[sensor_idx].model), LEN_MODEL);
-    char *c = &buffer[LEN_VENDOR-1];
-    while (*c == ' ' && c >= buffer) {
-        *c = 0;
-        c--;
+    char *b = buffer;
+    char *c = reinterpret_cast<char *>(sensors.sensors[sensor_idx].model);
+
+    for (size_t i = 0; i < LEN_MODEL && *c != ' '; i++) {
+        *b++ = *c++;
+        *b = 0;
     }
 }
