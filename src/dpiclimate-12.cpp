@@ -11,7 +11,8 @@
 #ifdef ESP32
 #include "esp_log.h"
 #define TAG "DPI12"
-#define LOG(format, ...) ESP_LOGI(TAG, format, ##__VA_ARGS__)
+//#define LOG(format, ...) ESP_LOGI(TAG, format, ##__VA_ARGS__)
+#define LOG(format, ...)
 #else
 #define LOG log_msg
 
@@ -100,7 +101,7 @@ int DPIClimate12::get_response(uint32_t timeout) {
 
 int DPIClimate12::get_response(char *buffer, int buffer_len, uint32_t timeout) {
     int i = get_response(timeout);
-    if (i > 0 && buffer != 0 && buffer_len > 0) {
+    if (i > 0 && buffer != nullptr && buffer_len > 0) {
         int len = i < buffer_len ? i : buffer_len;
         memcpy(buffer, response_buffer, len);
     }
@@ -153,7 +154,9 @@ int DPIClimate12::parse_values(int value_idx) {
             continue;
         }
 
-        m_values[value_idx].value = atof(str_val);
+        m_values[value_idx].value = strtod(str_val, nullptr);
+        Serial.printf("Raw SDI-12 value [%s] parsed to [%f]\n", str_val, m_values[value_idx].value);
+
         value_idx++;
         v_count++;
         str_val[0] = ch;

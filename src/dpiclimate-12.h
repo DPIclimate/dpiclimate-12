@@ -5,8 +5,8 @@
 /// \brief A union to make it simple to access the bytes of a float
 /// for encoding values into messages.
 typedef union {
-    float value;
-    uint8_t bytes[4];
+    double value;
+    uint8_t bytes[sizeof(double)];
 } FLOAT;
 
 constexpr int LEN_VENDOR = 8;
